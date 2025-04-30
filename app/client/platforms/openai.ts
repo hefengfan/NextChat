@@ -309,7 +309,7 @@ export class ChatGPTApi implements LLMApi {
               delta: {
                 content: string;
                 tool_calls: ChatMessageTool[];
-                reasoning_content: string | null;
+                reasoning: string | null;
               };
             }>;
 
@@ -335,7 +335,7 @@ export class ChatGPTApi implements LLMApi {
               }
             }
 
-            const reasoning = choices[0]?.delta?.reasoning_content;
+            const reasoning = choices[0]?.delta?.reasoning;
             const content = choices[0]?.delta?.content;
 
             // Skip if both content and reasoning_content are empty or null
