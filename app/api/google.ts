@@ -68,6 +68,29 @@ export const preferredRegion = [
   "syd1",
 ];
 
+// Function to detect if the input is code (very basic check)
+function isCode(input: string): boolean {
+  // Check for common code keywords and symbols
+  const codeKeywords = ["function", "class", "import", "export", "const", "let", "var", "if", "else", "for", "while", "return"];
+  const codeSymbols = ["{", "}", "(", ")", "[", "]", ";", "=", "+", "-", "*", "/", "<", ">", "."];
+
+  const lowerCaseInput = input.toLowerCase();
+  for (const keyword of codeKeywords) {
+    if (lowerCaseInput.includes(keyword)) {
+      return true;
+    }
+  }
+
+  for (const symbol of codeSymbols) {
+    if (lowerCaseInput.includes(symbol)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+
 async function request(req: NextRequest, apiKey: string, originalReq: NextRequest) {
   const controller = new AbortController();
 
@@ -110,25 +133,21 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
     body = {};
   }
 
-  // Check if the user's content contains code.  Disable googleSearch if it does.
-  let enableGoogleSearch = true;
-  if (body?.contents && Array.isArray(body.contents)) {
-    for (const content of body.contents) {
-      if (content?.parts && Array.isArray(content.parts)) {
-        for (const part of content.parts) {
-          if (typeof part.text === 'string' && part.text.includes('```')) {
-            enableGoogleSearch = false;
-            break;
-          }
-        }
+  // Check if the input is code
+  let useGoogleSearch = true;
+  if (body?.contents && Array.isArray(body.contents) && body.contents.length > 0) {
+    const firstPart = body.contents[0];
+    if (firstPart?.parts && Array.isArray(firstPart.parts) && firstPart.parts.length > 0) {
+      const text = firstPart.parts[0]?.text;
+      if (text && isCode(text)) {
+        useGoogleSearch = false;
       }
-      if (!enableGoogleSearch) break;
     }
   }
 
   // Add the tools array if it doesn't exist and we want to use googleSearch
   if (
-    enableGoogleSearch &&
+    useGoogleSearch &&
     body &&
     typeof body === "object" &&
     !Array.isArray(body) &&
@@ -136,19 +155,6 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
   ) {
     body.tools = [{ googleSearch: {} }];
   }
-
-  // Increase search depth (if enabled)
-  if (enableGoogleSearch && body?.tools && Array.isArray(body.tools)) {
-    for (const tool of body.tools) {
-      if (tool?.googleSearch && typeof tool.googleSearch === 'object') {
-        tool.googleSearch = {
-          ...tool.googleSearch,
-          max_results: 150, // Increase the number of results (default is probably lower)
-        };
-      }
-    }
-  }
-
 
   const fetchOptions: RequestInit = {
     headers: {
