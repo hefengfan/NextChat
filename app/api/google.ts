@@ -114,7 +114,22 @@ async function request(req: NextRequest, apiKey: string) {
     !Array.isArray(body) &&
     !body.tools
   ) {
-    body.tools = [{ googleSearch: {} }];
+    body.tools = [{ function_declarations: [
+        {
+          name: "google_search",
+          description: "Use Google Search to find relevant information.",
+          parameters: {
+            type: "OBJECT",
+            properties: {
+              query: {
+                type: "STRING",
+                description: "The search query to use."
+              }
+            },
+            required: ["query"]
+          }
+        }
+      ] }];
   }
 
   const fetchOptions: RequestInit = {
@@ -143,75 +158,49 @@ async function request(req: NextRequest, apiKey: string) {
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    // Check if the response is a stream (SSE)
+    // Handle streaming responses (SSE)
     if (req?.nextUrl?.searchParams?.get("alt") === "sse") {
-      // Return the original stream without modification
-      return new Response(res.body, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: newHeaders,
-      });
-    }
+      const reader = res.body?.getReader();
+      if (!reader) {
+        return new NextResponse("Failed to read response body", { status: 500 });
+      }
 
-    // Modify the response body to include search results
-    const responseBody = await res.text();
-    let parsedBody;
-    try {
-      parsedBody = JSON.parse(responseBody);
-    } catch (error) {
-      console.error("Failed to parse response body:", error);
-      return new Response(responseBody, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: newHeaders,
-      });
-    }
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
 
-    // Extract search results and append them to the response
-    if (parsedBody && parsedBody.candidates && Array.isArray(parsedBody.candidates)) {
-      parsedBody.candidates = parsedBody.candidates.map(candidate => {
-        if (candidate.content && candidate.content.parts && Array.isArray(candidate.content.parts)) {
-          candidate.content.parts = candidate.content.parts.map(part => {
-            if (typeof part.text === 'string') {
-              // Regular expression to find Google Search result placeholders
-              const searchResultRegex = /\[.*?google_search.*?\]/g;
-              let modifiedText = part.text;
-              let match;
-
-              while ((match = searchResultRegex.exec(part.text)) !== null) {
-                const placeholder = match[0];
-                const searchIndex = parseInt(placeholder.match(/\d+/)![0], 10);
-
-                // Assuming searchResults are stored in a global or accessible scope
-                if (body.tools && body.tools[0].googleSearch && body.tools[0].googleSearch.results && body.tools[0].googleSearch.results[searchIndex]) {
-                  const searchResult = body.tools[0].googleSearch.results[searchIndex];
-                  const link = searchResult.link;
-                  const title = searchResult.title;
-
-                  // Create the markdown link
-                  const markdownLink = `[${title}](${link})`;
-                  modifiedText = modifiedText.replace(placeholder, markdownLink);
-                } else {
-                  console.warn(`Search result not found for index: ${searchIndex}`);
-                }
+      return new ReadableStream({
+        async start(controller) {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                controller.close();
+                break;
               }
-              return { text: modifiedText };
-            }
-            return part;
-          });
-        }
-        return candidate;
-      });
-      const modifiedResponseBody = JSON.stringify(parsedBody);
 
-      return new Response(modifiedResponseBody, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: newHeaders,
-      });
+              const text = decoder.decode(value);
+              // Process the SSE data to extract search results and format them
+
+              const processedText = await processSSEData(text);
+
+              if (processedText) {
+                controller.enqueue(encoder.encode(processedText));
+              } else {
+                controller.enqueue(encoder.encode(text)); // Pass through original data if processing fails or is not needed
+              }
+            }
+          } catch (error) {
+            console.error("Error during SSE processing:", error);
+            controller.error(error);
+          } finally {
+            reader.releaseLock();
+            clearTimeout(timeoutId);
+          }
+        },
+      }, { headers: newHeaders });
     }
 
-    return new Response(responseBody, {
+    return new Response(res.body, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
@@ -219,4 +208,48 @@ async function request(req: NextRequest, apiKey: string) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function processSSEData(data: string): Promise<string | null> {
+  // Split the data into individual SSE events
+  const events = data.split("data: ").filter(Boolean);
+
+  let searchResults = [];
+
+  for (const event of events) {
+    try {
+      const jsonString = event.trim();
+
+      // Attempt to parse the JSON string
+      const parsedData = JSON.parse(jsonString);
+
+      // Check if the function call is a google_search result
+      if (parsedData?.candidates?.[0]?.content?.parts) {
+        parsedData.candidates[0].content.parts.forEach(part => {
+          if (part.function_response?.name === 'google_search') {
+            const searchResult = JSON.parse(part.function_response.content);
+            if (searchResult?.results && Array.isArray(searchResult.results)) {
+              searchResults = searchResult.results.map(result => ({
+                title: result.title,
+                link: result.link,
+              }));
+            }
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Error parsing JSON:", error);
+      return null; // Return null if parsing fails to avoid crashing the stream
+    }
+  }
+
+  // If search results are found, format them into a markdown list
+  if (searchResults.length > 0) {
+    const formattedResults = searchResults
+      .map((result) => `- [${result.title}](${result.link})`)
+      .join("\n");
+    return `\n\n**Search Results:**\n${formattedResults}\n\n`;
+  }
+
+  return null; // Return null if no search results are found
 }
