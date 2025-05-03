@@ -143,6 +143,16 @@ async function request(req: NextRequest, apiKey: string) {
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
+    // Check if the response is a stream (SSE)
+    if (req?.nextUrl?.searchParams?.get("alt") === "sse") {
+      // Return the original stream without modification
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: newHeaders,
+      });
+    }
+
     // Modify the response body to include search results
     const responseBody = await res.text();
     let parsedBody;
