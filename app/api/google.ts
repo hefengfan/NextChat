@@ -101,16 +101,15 @@ async function request(req: NextRequest, apiKey: string) {
 
   console.log("[Fetch Url] ", fetchUrl);
 
-  // Parse the request body to potentially add the tools
+  // Parse the request body
   let body;
   try {
     body = await req.json();
   } catch (error) {
-    // If the body is not JSON, or there's an error parsing it, use an empty object.
     body = {};
   }
 
-  // Add the tools array if it doesn't exist and we want to use googleSearch
+  // Add the tools array if it doesn't exist
   if (
     body &&
     typeof body === "object" &&
@@ -124,13 +123,10 @@ async function request(req: NextRequest, apiKey: string) {
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
-      "x-goog-api-key":
-        req.headers.get("x-goog-api-key") ||
-        (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
+      "x-goog-api-key": apiKey,
     },
     method: req.method,
-    body: JSON.stringify(body), // Stringify the modified body
-    // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
+    body: JSON.stringify(body),
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
@@ -139,11 +135,12 @@ async function request(req: NextRequest, apiKey: string) {
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
-    // to prevent browser prompt for credentials
+    
+    // Create new headers
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
-    // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
+    newHeaders.set("Content-Type", "text/plain; charset=utf-8");
 
     if (!res.body) {
       return new Response(res.body, {
@@ -153,38 +150,52 @@ async function request(req: NextRequest, apiKey: string) {
       });
     }
 
-    const reader = res.body.getReader();
-
-    // Use a TransformStream to process each chunk as it arrives
+    // Create a transform stream to process the streaming response
     const transformStream = new TransformStream({
+      // Buffer to hold partial data between chunks
+      partialBuffer: "",
+      
       transform(chunk, controller) {
-        const text = new TextDecoder().decode(chunk);
-        const urlRegex = /(https?:\/\/[^\s]+)/g;
-        let formattedText = "";
-        let lastIndex = 0;
-        let match;
-
-        while ((match = urlRegex.exec(text)) !== null) {
-          formattedText += text.substring(lastIndex, match.index);
-          formattedText += ` [${match[0]}](${match[0]}) `;
-          lastIndex = urlRegex.lastIndex;
+        // Decode the chunk and combine with any partial data from previous chunks
+        const text = this.partialBuffer + new TextDecoder().decode(chunk);
+        
+        // Format URLs in markdown style
+        const formattedText = text.replace(
+          /(https?:\/\/[^\s"'<>{}|\\^[\]]+)/g, 
+          (url) => ` [${url}](${url}) `
+        );
+        
+        // Find the last valid URL end position
+        const lastValidUrlEnd = formattedText.lastIndexOf(") ");
+        if (lastValidUrlEnd === -1) {
+          this.partialBuffer = text;
+          return;
         }
-
-        formattedText += text.substring(lastIndex);
-        controller.enqueue(new TextEncoder().encode(formattedText)); // Re-encode the formatted text
+        
+        // Send the complete part
+        const completePart = formattedText.substring(0, lastValidUrlEnd + 2);
+        controller.enqueue(new TextEncoder().encode(completePart));
+        
+        // Store any remaining partial data
+        this.partialBuffer = formattedText.substring(lastValidUrlEnd + 2);
       },
+      
+      flush(controller) {
+        // Send any remaining data
+        if (this.partialBuffer) {
+          controller.enqueue(new TextEncoder().encode(this.partialBuffer));
+        }
+      }
     });
 
-    // Pipe the response body through the transform stream
+    // Pipe the original response through our transform stream
     const transformedStream = res.body.pipeThrough(transformStream);
 
-    // Return the transformed stream as the response
     return new Response(transformedStream, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
     });
-
   } finally {
     clearTimeout(timeoutId);
   }
