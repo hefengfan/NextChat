@@ -40,11 +40,39 @@ export async function handle(
       },
     );
   }
+
   try {
+    // 添加 Google Search 路径判断
+    if (params.path?.includes("search")) {
+      return handleGoogleSearch(req, apiKey);
+    }
+    
     const response = await request(req, apiKey);
     return response;
   } catch (e) {
     console.error("[Google] ", e);
+    return NextResponse.json(prettyObject(e));
+  }
+}
+
+// 新增 Google Search 处理函数
+async function handleGoogleSearch(req: NextRequest, apiKey: string) {
+  const searchQuery = req.nextUrl.searchParams.get("q");
+  if (!searchQuery) {
+    return NextResponse.json(
+      { error: true, message: "Missing search query" },
+      { status: 400 },
+    );
+  }
+
+  const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${serverConfig.googleSearchEngineId}&q=${encodeURIComponent(searchQuery)}`;
+
+  try {
+    const response = await fetch(searchUrl);
+    const data = await response.json();
+    return NextResponse.json(data);
+  } catch (e) {
+    console.error("[Google Search] ", e);
     return NextResponse.json(prettyObject(e));
   }
 }
@@ -108,7 +136,6 @@ async function request(req: NextRequest, apiKey: string) {
     },
     method: req.method,
     body: req.body,
-    // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
@@ -117,10 +144,8 @@ async function request(req: NextRequest, apiKey: string) {
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
-    // to prevent browser prompt for credentials
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
-    // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
     return new Response(res.body, {
