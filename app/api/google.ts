@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "./auth";
 import { getServerSideConfig } from "@/app/config/server";
-import { ApiPath, ModelProvider } from "@/app/constant";
+import { ApiPath, GEMINI_BASE_URL, ModelProvider } from "@/app/constant";
 import { prettyObject } from "@/app/utils/format";
 
 const serverConfig = getServerSideConfig();
-
-// Google Search API endpoint (replace with actual Google Search API endpoint)
-const GOOGLE_SEARCH_API_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
 
 export async function handle(
   req: NextRequest,
@@ -19,7 +16,7 @@ export async function handle(
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }
 
-  const authResult = auth(req, ModelProvider.GoogleSearch); // Changed to GoogleSearch
+  const authResult = auth(req, ModelProvider.GeminiPro);
   if (authResult.error) {
     return NextResponse.json(authResult, {
       status: 401,
@@ -43,33 +40,9 @@ export async function handle(
       },
     );
   }
-
   try {
-    // Check if it's a Google Search request
-    if (params.path[0] === "search") {
-      const searchTerm = req.nextUrl.searchParams.get("q"); // Assuming 'q' is the query parameter
-      if (!searchTerm) {
-        return NextResponse.json(
-          { error: true, message: "Missing search term 'q'" },
-          { status: 400 },
-        );
-      }
-
-      const cx = serverConfig.googleSearchEngineId; // Get the Search Engine ID
-      if (!cx) {
-        return NextResponse.json(
-          { error: true, message: "Missing GOOGLE_SEARCH_ENGINE_ID in server env vars" },
-          { status: 400 },
-        );
-      }
-
-      const searchResponse = await googleSearch(searchTerm, apiKey, cx);
-      return searchResponse;
-    } else {
-      // Handle other Google API requests (if any)
-      const response = await request(req, apiKey);
-      return response;
-    }
+    const response = await request(req, apiKey);
+    return response;
   } catch (e) {
     console.error("[Google] ", e);
     return NextResponse.json(prettyObject(e));
@@ -98,10 +71,7 @@ export const preferredRegion = [
 async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
 
-  let baseUrl = serverConfig.googleUrl; // Use the config for other Google APIs, or default to Gemini
-  if (!baseUrl) {
-      return NextResponse.json({ error: true, message: "Missing googleUrl in server config.  This is required for non-search google API calls." }, { status: 500 });
-  }
+  let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
 
   let path = `${req.nextUrl.pathname}`.replaceAll(ApiPath.Google, "");
 
@@ -159,34 +129,5 @@ async function request(req: NextRequest, apiKey: string) {
     });
   } finally {
     clearTimeout(timeoutId);
-  }
-}
-
-async function googleSearch(searchTerm: string, apiKey: string, cx: string): Promise<NextResponse> {
-  try {
-    const url = `${GOOGLE_SEARCH_API_ENDPOINT}?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(
-      searchTerm,
-    )}`;
-
-    console.log("[Google Search URL]", url);
-
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      console.error("[Google Search Error]", response.status, response.statusText);
-      return NextResponse.json(
-        { error: true, message: `Google Search API error: ${response.status} ${response.statusText}` },
-        { status: response.status },
-      );
-    }
-
-    const data = await response.json();
-    return NextResponse.json(data, { status: 200 });
-  } catch (error) {
-    console.error("[Google Search Fetch Error]", error);
-    return NextResponse.json(
-      { error: true, message: `Google Search API fetch error: ${error}` },
-      { status: 500 },
-    );
   }
 }
