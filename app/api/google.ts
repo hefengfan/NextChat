@@ -1,4 +1,3 @@
-```typescript
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "./auth";
 import { getServerSideConfig } from "@/app/config/server";
@@ -69,82 +68,15 @@ export const preferredRegion = [
   "syd1",
 ];
 
-// Helper function to extract URLs from the googleSearch tool results
-function extractUrls(body: any): string[] {
-  if (!body || !body.tools) {
-    return [];
-  }
-
-  const googleSearchTool = body.tools.find(
-    (tool: any) => tool.googleSearch !== undefined,
-  );
-
-  if (!googleSearchTool || !googleSearchTool.googleSearch) {
-    return [];
-  }
-
-  const results = googleSearchTool.googleSearch.results;
-
-  if (!results || !Array.isArray(results)) {
-    return [];
-  }
-
-  return results.map((result: any) => result.link || result.url || "");
-}
-
-
-// Helper function to append citations to the AI response using only URLs
-function appendCitations(
-  responseText: string,
-  citations: string[],
-): string {
-  if (!citations || citations.length === 0) {
-    return responseText;
-  }
-
-  // Parse the response text to handle both plain text and JSON responses
-  try {
-    // Try to parse as JSON (for streaming responses)
-    const responseJson = JSON.parse(responseText);
-    if (responseJson.candidates && responseJson.candidates[0]?.content?.parts) {
-      // This is a Gemini response with parts
-      const parts = responseJson.candidates[0].content.parts;
-      if (parts.length > 0 && parts[0].text) {
-        let augmentedText = parts[0].text;
-        citations.forEach((url, index) => {
-          augmentedText += ` [${url}](${url})`; // Use URL as both text and link
-        });
-        parts[0].text = augmentedText;
-        responseJson.candidates[0].content.parts[0].text = augmentedText; // Correctly modify the JSON object
-        return JSON.stringify(responseJson);
-      }
-    } else if (responseJson.text) {
-      // This is a simple text response
-      let augmentedText = responseJson.text;
-      citations.forEach((url, index) => {
-        augmentedText += ` [${url}](${url})`; // Use URL as both text and link
-      });
-      responseJson.text = augmentedText;
-      return JSON.stringify(responseJson);
-    }
-  } catch (e) {
-    // If not JSON, treat as plain text
-    let augmentedText = responseText;
-    citations.forEach((url, index) => {
-      augmentedText += ` [${url}](${url})`; // Use URL as both text and link
-    });
-    return augmentedText;
-  }
-
-  return responseText;
-}
-
 async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
 
   let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
 
   let path = `${req.nextUrl.pathname}`.replaceAll(ApiPath.Google, "");
+
+  // Remove the specific path segment
+  path = path.replace("/v1beta/models/gemini-pro:streamGenerateContent", "");
 
   if (!baseUrl.startsWith("http")) {
     baseUrl = `https://${baseUrl}`;
@@ -207,37 +139,57 @@ async function request(req: NextRequest, apiKey: string) {
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
-
     // to prevent browser prompt for credentials
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    // Read the response body as text
-    let responseText = await res.text();
+    // Capture and format URLs from the response body if it's a stream
+    if (res.body) {
+      const reader = res.body.getReader();
+      let accumulatedData = "";
 
-    // Extract URLs from the request body (assuming it contains the googleSearch tool results)
-    const citations = extractUrls(body);
+      while (true) {
+        const { done, value } = await reader.read();
 
-    // Append citations to the response text
-    responseText = appendCitations(responseText, citations);
+        if (done) {
+          break;
+        }
 
-    return new Response(responseText, {
-      status: res.status,
-      statusText: res.statusText,
-      headers: newHeaders,
-    });
+        accumulatedData += new TextDecoder().decode(value);
+
+        // Look for URLs in the accumulated data and format them
+        const urlRegex = /(https?:\/\/[^\s]+)/g;
+        let match;
+        let formattedData = "";
+        let lastIndex = 0;
+
+        while ((match = urlRegex.exec(accumulatedData)) !== null) {
+          formattedData += accumulatedData.substring(lastIndex, match.index);
+          formattedData += ` [${match[0]}](${match[0]}) `;  // Markdown format
+          lastIndex = urlRegex.lastIndex;
+        }
+
+        formattedData += accumulatedData.substring(lastIndex);
+        accumulatedData = formattedData;  // Update accumulatedData with formatted data
+      }
+
+      // Create a new response with the modified body
+      return new Response(accumulatedData, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: newHeaders,
+      });
+    } else {
+      // If the response doesn't have a body, return the original response
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: newHeaders,
+      });
+    }
   } finally {
     clearTimeout(timeoutId);
   }
 }
-```
-
-Key changes:
-
-* **`extractUrls` function:** This function now extracts only the URLs from the Google Search results.
-* **`appendCitations` function:** This function now takes an array of URLs as input. Inside the function, the citation is created using the URL as both the text and the link: `[${url}](${url})`.
-* **Type changes:**  The type of the `citations` parameter in `appendCitations` and the return type of `extractUrls` are changed to `string[]`.
-
-This revised code will now generate citations that display the URL directly as the clickable link text.  For example: `[https://www.example.com](https://www.example.com)`.
