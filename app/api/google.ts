@@ -100,8 +100,7 @@ async function request(req: NextRequest, apiKey: string) {
   const fetchOptions: RequestInit = {
     headers: {
       "x-goog-api-client": req.headers.get("x-goog-api-client") || "genai-js/0.21.0",
-      
-      "Content-Type": "application/json",
+      "Content-Type": req.headers.get("Content-Type") || "application/json",
       "Cache-Control": "no-store",
       "x-goog-api-key":
         req.headers.get("x-goog-api-key") ||
