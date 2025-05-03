@@ -150,11 +150,11 @@ async function request(req: NextRequest, apiKey: string) {
 
     // Check if the stream is empty (optional, but good practice)
     if (!body1) {
-        return new Response(null, { // Return an empty response
-            status: res.status,
-            statusText: res.statusText,
-            headers: newHeaders,
-        });
+      return new Response(null, { // Return an empty response
+        status: res.status,
+        statusText: res.statusText,
+        headers: newHeaders,
+      });
     }
 
     const transformStream = new TransformStream({
@@ -168,7 +168,7 @@ async function request(req: NextRequest, apiKey: string) {
 
           while ((match = urlRegex.exec(text)) !== null) {
             formattedText += text.substring(lastIndex, match.index);
-            formattedText += ` [${match[0]}](${match[0]}) `;
+            formattedText += `[${match[0]}](${match[0]})`; // Format URL as [URL](URL)
             lastIndex = urlRegex.lastIndex;
           }
 
