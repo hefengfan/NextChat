@@ -41,7 +41,7 @@ export async function handle(
     );
   }
   try {
-    const response = await request(req, apiKey);
+    const response = await request(req, apiKey, req);
     return response;
   } catch (e) {
     console.error("[Google] ", e);
@@ -68,7 +68,7 @@ export const preferredRegion = [
   "syd1",
 ];
 
-async function request(req: NextRequest, apiKey: string) {
+async function request(req: NextRequest, apiKey: string, originalReq: NextRequest) {
   const controller = new AbortController();
 
   let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
@@ -110,8 +110,25 @@ async function request(req: NextRequest, apiKey: string) {
     body = {};
   }
 
+  // Check if the user's content contains code.  Disable googleSearch if it does.
+  let enableGoogleSearch = true;
+  if (body?.contents && Array.isArray(body.contents)) {
+    for (const content of body.contents) {
+      if (content?.parts && Array.isArray(content.parts)) {
+        for (const part of content.parts) {
+          if (typeof part.text === 'string' && part.text.includes('```')) {
+            enableGoogleSearch = false;
+            break;
+          }
+        }
+      }
+      if (!enableGoogleSearch) break;
+    }
+  }
+
   // Add the tools array if it doesn't exist and we want to use googleSearch
   if (
+    enableGoogleSearch &&
     body &&
     typeof body === "object" &&
     !Array.isArray(body) &&
@@ -120,13 +137,26 @@ async function request(req: NextRequest, apiKey: string) {
     body.tools = [{ googleSearch: {} }];
   }
 
+  // Increase search depth (if enabled)
+  if (enableGoogleSearch && body?.tools && Array.isArray(body.tools)) {
+    for (const tool of body.tools) {
+      if (tool?.googleSearch && typeof tool.googleSearch === 'object') {
+        tool.googleSearch = {
+          ...tool.googleSearch,
+          max_results: 150, // Increase the number of results (default is probably lower)
+        };
+      }
+    }
+  }
+
+
   const fetchOptions: RequestInit = {
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
       "x-goog-api-key":
-        req.headers.get("x-goog-api-key") ||
-        (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
+        originalReq.headers.get("x-goog-api-key") ||
+        (originalReq.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
     body: JSON.stringify(body), // Stringify the modified body
@@ -145,57 +175,11 @@ async function request(req: NextRequest, apiKey: string) {
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    // Use tee() to create two independent streams
-    const [body1, body2] = res.body ? res.body.tee() : [null, null];
-
-    // Check if the stream is empty (optional, but good practice)
-    if (!body1) {
-      return new Response(null, { // Return an empty response
-        status: res.status,
-        statusText: res.statusText,
-        headers: newHeaders,
-      });
-    }
-
-    const transformStream = new TransformStream({
-      transform(chunk, controller) {
-        try {
-          const text = new TextDecoder().decode(chunk);
-          const urlRegex = /(https?:\/\/[^\s]+)/g;
-          let formattedText = "";
-          let lastIndex = 0;
-          let match;
-
-          while ((match = urlRegex.exec(text)) !== null) {
-            formattedText += text.substring(lastIndex, match.index);
-            formattedText += `[${match[0]}](${match[0]})`; // Format URL as [URL](URL)
-            lastIndex = urlRegex.lastIndex;
-          }
-
-          formattedText += text.substring(lastIndex);
-          controller.enqueue(new TextEncoder().encode(formattedText));
-        } catch (e) {
-          console.error("TransformStream error:", e);
-          controller.error(e); // Signal an error to the stream
-        }
-      },
-      flush(controller) {
-        // Optional: Handle any remaining data or cleanup here
-      },
-    }, { highWaterMark: 0 }); // Setting highWaterMark to 0 can help with backpressure
-
-    // Pipe the *second* stream (body2) through the transform stream
-    const transformedStream = body2.pipeThrough(transformStream);
-
-    return new Response(transformedStream, {
+    return new Response(res.body, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
     });
-
-  } catch (e) {
-    console.error("Fetch error:", e);
-    return new NextResponse(JSON.stringify({ error: "Fetch failed", details: e }), { status: 500 });
   } finally {
     clearTimeout(timeoutId);
   }
