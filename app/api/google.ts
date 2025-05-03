@@ -1,3 +1,4 @@
+```typescript
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "./auth";
 import { getServerSideConfig } from "@/app/config/server";
@@ -68,8 +69,8 @@ export const preferredRegion = [
   "syd1",
 ];
 
-// Helper function to extract URLs and titles from the googleSearch tool results
-function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
+// Helper function to extract URLs from the googleSearch tool results
+function extractUrls(body: any): string[] {
   if (!body || !body.tools) {
     return [];
   }
@@ -88,16 +89,14 @@ function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
     return [];
   }
 
-  return results.map((result: any) => ({
-    title: result.title || "Untitled",
-    url: result.link || result.url || "",
-  }));
+  return results.map((result: any) => result.link || result.url || "");
 }
 
-// Helper function to append citations to the AI response
+
+// Helper function to append citations to the AI response using only URLs
 function appendCitations(
   responseText: string,
-  citations: { title: string; url: string }[],
+  citations: string[],
 ): string {
   if (!citations || citations.length === 0) {
     return responseText;
@@ -112,17 +111,18 @@ function appendCitations(
       const parts = responseJson.candidates[0].content.parts;
       if (parts.length > 0 && parts[0].text) {
         let augmentedText = parts[0].text;
-        citations.forEach((citation, index) => {
-          augmentedText += ` [${citation.title}](${citation.url})`;
+        citations.forEach((url, index) => {
+          augmentedText += ` [${url}](${url})`; // Use URL as both text and link
         });
         parts[0].text = augmentedText;
+        responseJson.candidates[0].content.parts[0].text = augmentedText; // Correctly modify the JSON object
         return JSON.stringify(responseJson);
       }
     } else if (responseJson.text) {
       // This is a simple text response
       let augmentedText = responseJson.text;
-      citations.forEach((citation, index) => {
-        augmentedText += ` [${citation.title}](${citation.url})`;
+      citations.forEach((url, index) => {
+        augmentedText += ` [${url}](${url})`; // Use URL as both text and link
       });
       responseJson.text = augmentedText;
       return JSON.stringify(responseJson);
@@ -130,8 +130,8 @@ function appendCitations(
   } catch (e) {
     // If not JSON, treat as plain text
     let augmentedText = responseText;
-    citations.forEach((citation, index) => {
-      augmentedText += ` [${citation.title}](${citation.url})`;
+    citations.forEach((url, index) => {
+      augmentedText += ` [${url}](${url})`; // Use URL as both text and link
     });
     return augmentedText;
   }
@@ -217,8 +217,8 @@ async function request(req: NextRequest, apiKey: string) {
     // Read the response body as text
     let responseText = await res.text();
 
-    // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
-    const citations = extractUrlsAndTitles(body);
+    // Extract URLs from the request body (assuming it contains the googleSearch tool results)
+    const citations = extractUrls(body);
 
     // Append citations to the response text
     responseText = appendCitations(responseText, citations);
@@ -232,3 +232,12 @@ async function request(req: NextRequest, apiKey: string) {
     clearTimeout(timeoutId);
   }
 }
+```
+
+Key changes:
+
+* **`extractUrls` function:** This function now extracts only the URLs from the Google Search results.
+* **`appendCitations` function:** This function now takes an array of URLs as input. Inside the function, the citation is created using the URL as both the text and the link: `[${url}](${url})`.
+* **Type changes:**  The type of the `citations` parameter in `appendCitations` and the return type of `extractUrls` are changed to `string[]`.
+
+This revised code will now generate citations that display the URL directly as the clickable link text.  For example: `[https://www.example.com](https://www.example.com)`.
