@@ -97,6 +97,26 @@ async function request(req: NextRequest, apiKey: string) {
   }`;
 
   console.log("[Fetch Url] ", fetchUrl);
+
+  // Parse the request body to potentially add the tools
+  let body;
+  try {
+    body = await req.json();
+  } catch (error) {
+    // If the body is not JSON, or there's an error parsing it, use an empty object.
+    body = {};
+  }
+
+  // Add the tools array if it doesn't exist and we want to use googleSearch
+  if (
+    body &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    !body.tools
+  ) {
+    body.tools = [{ googleSearch: {} }];
+  }
+
   const fetchOptions: RequestInit = {
     headers: {
       "Content-Type": "application/json",
@@ -106,7 +126,7 @@ async function request(req: NextRequest, apiKey: string) {
         (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
-    body: req.body,
+    body: JSON.stringify(body), // Stringify the modified body
     // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
     redirect: "manual",
     // @ts-ignore
