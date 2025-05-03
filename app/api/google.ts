@@ -187,15 +187,15 @@ async function request(req: NextRequest, apiKey: string) {
     newHeaders.set("X-Accel-Buffering", "no");
 
     // Read the response body as text
-    const responseText = await res.text();
+    let responseText = await res.text();
 
     // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
     const citations = extractUrlsAndTitles(body);
 
     // Append citations to the response text
-    const augmentedResponse = appendCitations(responseText, citations);
+    responseText = appendCitations(responseText, citations);
 
-    return new Response(augmentedResponse, {
+    return new Response(responseText, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
