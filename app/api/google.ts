@@ -68,15 +68,55 @@ export const preferredRegion = [
   "syd1",
 ];
 
+// Helper function to extract URLs and titles from the googleSearch tool results
+function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
+  if (!body || !body.tools) {
+    return [];
+  }
+
+  const googleSearchTool = body.tools.find(
+    (tool: any) => tool.googleSearch !== undefined,
+  );
+
+  if (!googleSearchTool || !googleSearchTool.googleSearch) {
+    return [];
+  }
+
+  const results = googleSearchTool.googleSearch.results;
+
+  if (!results || !Array.isArray(results)) {
+    return [];
+  }
+
+  return results.map((result: any) => ({
+    title: result.title || "Untitled",
+    url: result.link || result.url || "",
+  }));
+}
+
+// Helper function to append citations to the AI response
+function appendCitations(
+  responseText: string,
+  citations: { title: string; url: string }[],
+): string {
+  if (!citations || citations.length === 0) {
+    return responseText;
+  }
+
+  let augmentedResponse = responseText;
+  citations.forEach((citation, index) => {
+    augmentedResponse += ` [${citation.title}](${citation.url})`;
+  });
+
+  return augmentedResponse;
+}
+
 async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
 
   let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
 
   let path = `${req.nextUrl.pathname}`.replaceAll(ApiPath.Google, "");
-
-  // Remove the specific path segment
-  path = path.replace("/v1beta/models/gemini-pro:streamGenerateContent", "");
 
   if (!baseUrl.startsWith("http")) {
     baseUrl = `https://${baseUrl}`;
@@ -139,13 +179,23 @@ async function request(req: NextRequest, apiKey: string) {
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
+
     // to prevent browser prompt for credentials
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    return new Response(res.body, {
+    // Read the response body as text
+    const responseText = await res.text();
+
+    // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
+    const citations = extractUrlsAndTitles(body);
+
+    // Append citations to the response text
+    const augmentedResponse = appendCitations(responseText, citations);
+
+    return new Response(augmentedResponse, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
