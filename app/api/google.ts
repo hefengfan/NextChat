@@ -6,7 +6,7 @@ import { prettyObject } from "@/app/utils/format";
 
 const serverConfig = getServerSideConfig();
 
-async function handle(
+export async function handle(
   req: NextRequest,
   { params }: { params: { provider: string; path: string[] } },
 ) {
@@ -107,23 +107,14 @@ async function request(req: NextRequest, apiKey: string) {
     body = {};
   }
 
-  // Check if the user input is too long.  If so, skip the google search.
-  const userInput = (body?.contents?.[0]?.parts?.[0]?.text || "").trim();
-  const MAX_INPUT_LENGTH = 200; // Adjust this value as needed.
-  const shouldSearch = userInput.length <= MAX_INPUT_LENGTH;
-
-  // Add the tools array if it doesn't exist and we want to use googleSearch AND the input isn't too long.
+  // Add the tools array if it doesn't exist and we want to use googleSearch
   if (
-    shouldSearch &&
     body &&
     typeof body === "object" &&
     !Array.isArray(body) &&
     !body.tools
   ) {
     body.tools = [{ googleSearch: {} }];
-  } else if (body?.tools) {
-    // If input is too long, remove the tools array to prevent Google Search.
-    delete body.tools;
   }
 
   const fetchOptions: RequestInit = {
@@ -146,60 +137,75 @@ async function request(req: NextRequest, apiKey: string) {
   try {
     const res = await fetch(fetchUrl, fetchOptions);
 
-    // Check if the response is a stream (SSE)
-    if (req?.nextUrl?.searchParams?.get("alt") === "sse") {
-      // For SSE, just return the raw response.
-      const newHeaders = new Headers(res.headers);
-      newHeaders.delete("www-authenticate");
-      newHeaders.set("X-Accel-Buffering", "no");
+    // to prevent browser prompt for credentials
+    const newHeaders = new Headers(res.headers);
+    newHeaders.delete("www-authenticate");
+    // to disable nginx buffering
+    newHeaders.set("X-Accel-Buffering", "no");
 
-      return new Response(res.body, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: newHeaders,
-      });
-    } else {
-      // For non-SSE, process the JSON response to include links and titles.
-      const data = await res.json();
-
-      if (shouldSearch && data?.candidates?.[0]?.content?.parts) {
-        // Extract search results and append them to the response.
-        const searchResults =
-          data.candidates[0].content.parts.find(
-            (part: any) => part.tool_calls,
-          )?.tool_calls?.[0]?.function_response?.content;
-
-        if (searchResults) {
-          try {
-            const searchResultsJson = JSON.parse(searchResults);
-
-            if (searchResultsJson?.results && Array.isArray(searchResultsJson.results)) {
-              const formattedResults = searchResultsJson.results.map((result: any) => {
-                return `[${result.title}](${result.link})`;
-              }).join("\n");
-
-              // Append search results to the last part of the content.
-              const lastPart = data.candidates[0].content.parts.pop();
-              const newContent = (lastPart?.text || "") + "\n\n**Search Results:**\n" + formattedResults;
-              data.candidates[0].content.parts.push({ text: newContent });
-            }
-
-          } catch (error) {
-            console.error("Error parsing search results:", error);
-          }
-        }
-      }
-
-      const newHeaders = new Headers(res.headers);
-      newHeaders.delete("www-authenticate");
-      newHeaders.set("X-Accel-Buffering", "no");
-
-      return NextResponse.json(data, {
+    // Modify the response body to include search results
+    const responseBody = await res.text();
+    let parsedBody;
+    try {
+      parsedBody = JSON.parse(responseBody);
+    } catch (error) {
+      console.error("Failed to parse response body:", error);
+      return new Response(responseBody, {
         status: res.status,
         statusText: res.statusText,
         headers: newHeaders,
       });
     }
+
+    // Extract search results and append them to the response
+    if (parsedBody && parsedBody.candidates && Array.isArray(parsedBody.candidates)) {
+      parsedBody.candidates = parsedBody.candidates.map(candidate => {
+        if (candidate.content && candidate.content.parts && Array.isArray(candidate.content.parts)) {
+          candidate.content.parts = candidate.content.parts.map(part => {
+            if (typeof part.text === 'string') {
+              // Regular expression to find Google Search result placeholders
+              const searchResultRegex = /\[.*?google_search.*?\]/g;
+              let modifiedText = part.text;
+              let match;
+
+              while ((match = searchResultRegex.exec(part.text)) !== null) {
+                const placeholder = match[0];
+                const searchIndex = parseInt(placeholder.match(/\d+/)![0], 10);
+
+                // Assuming searchResults are stored in a global or accessible scope
+                if (body.tools && body.tools[0].googleSearch && body.tools[0].googleSearch.results && body.tools[0].googleSearch.results[searchIndex]) {
+                  const searchResult = body.tools[0].googleSearch.results[searchIndex];
+                  const link = searchResult.link;
+                  const title = searchResult.title;
+
+                  // Create the markdown link
+                  const markdownLink = `[${title}](${link})`;
+                  modifiedText = modifiedText.replace(placeholder, markdownLink);
+                } else {
+                  console.warn(`Search result not found for index: ${searchIndex}`);
+                }
+              }
+              return { text: modifiedText };
+            }
+            return part;
+          });
+        }
+        return candidate;
+      });
+      const modifiedResponseBody = JSON.stringify(parsedBody);
+
+      return new Response(modifiedResponseBody, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: newHeaders,
+      });
+    }
+
+    return new Response(responseBody, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: newHeaders,
+    });
   } finally {
     clearTimeout(timeoutId);
   }
