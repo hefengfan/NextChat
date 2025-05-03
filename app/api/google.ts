@@ -136,13 +136,44 @@ async function request(req: NextRequest, apiKey: string) {
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
+
     // to prevent browser prompt for credentials
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    return new Response(res.body, {
+    // Modified part to extract and format search results
+    let responseBody = await res.clone().json(); // Clone the response to read it without consuming it
+
+    if (responseBody && responseBody.candidates && responseBody.candidates.length > 0) {
+      const content = responseBody.candidates[0].content;
+      if (content && content.parts && content.parts.length > 0) {
+        const parts = content.parts;
+        let searchResults = "";
+
+        parts.forEach((part: any) => {
+          if (part.tool_calls && part.tool_calls.length > 0) {
+            part.tool_calls.forEach((toolCall: any) => {
+              if (toolCall.function_response && toolCall.function_response.content) {
+                const searchResultsArray = JSON.parse(toolCall.function_response.content);
+
+                if (Array.isArray(searchResultsArray)) {
+                  searchResultsArray.forEach((result: any) => {
+                    searchResults += `[${result.title}](${result.link}) - ${result.snippet}\n\n`;
+                  });
+                }
+              }
+            });
+          }
+        });
+
+        // Replace the original response with the formatted search results
+        responseBody = { searchResults };
+      }
+    }
+
+    return new Response(JSON.stringify(responseBody), { // Stringify the modified response body
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
