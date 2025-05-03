@@ -103,12 +103,40 @@ function appendCitations(
     return responseText;
   }
 
-  let augmentedResponse = responseText;
-  citations.forEach((citation, index) => {
-    augmentedResponse += ` [${citation.title}](${citation.url})`;
-  });
+  // Parse the response text to handle both plain text and JSON responses
+  try {
+    // Try to parse as JSON (for streaming responses)
+    const responseJson = JSON.parse(responseText);
+    if (responseJson.candidates && responseJson.candidates[0]?.content?.parts) {
+      // This is a Gemini response with parts
+      const parts = responseJson.candidates[0].content.parts;
+      if (parts.length > 0 && parts[0].text) {
+        let augmentedText = parts[0].text;
+        citations.forEach((citation, index) => {
+          augmentedText += ` [${citation.title}](${citation.url})`;
+        });
+        parts[0].text = augmentedText;
+        return JSON.stringify(responseJson);
+      }
+    } else if (responseJson.text) {
+      // This is a simple text response
+      let augmentedText = responseJson.text;
+      citations.forEach((citation, index) => {
+        augmentedText += ` [${citation.title}](${citation.url})`;
+      });
+      responseJson.text = augmentedText;
+      return JSON.stringify(responseJson);
+    }
+  } catch (e) {
+    // If not JSON, treat as plain text
+    let augmentedText = responseText;
+    citations.forEach((citation, index) => {
+      augmentedText += ` [${citation.title}](${citation.url})`;
+    });
+    return augmentedText;
+  }
 
-  return augmentedResponse;
+  return responseText;
 }
 
 async function request(req: NextRequest, apiKey: string) {
