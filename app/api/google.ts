@@ -42,16 +42,17 @@ export async function handle(
   }
 
   try {
-    // 添加 Google Search 路径判断
-    if (params.path?.includes("search")) {
-      return handleGoogleSearch(req, apiKey);
+    // 使用更精确的路径匹配
+    const fullPath = req.nextUrl.pathname;
+    if (fullPath.endsWith("/api/google/search")) { // 假设你的 Google Search API 路径是 /api/google/search
+      return await handleGoogleSearch(req, apiKey);
     }
-    
+
     const response = await request(req, apiKey);
     return response;
   } catch (e) {
     console.error("[Google] ", e);
-    return NextResponse.json(prettyObject(e));
+    return NextResponse.json(prettyObject(e), { status: 500 }); // 添加状态码
   }
 }
 
@@ -60,20 +61,38 @@ async function handleGoogleSearch(req: NextRequest, apiKey: string) {
   const searchQuery = req.nextUrl.searchParams.get("q");
   if (!searchQuery) {
     return NextResponse.json(
-      { error: true, message: "Missing search query" },
+      { error: true, message: "Missing search query 'q' parameter" },
       { status: 400 },
     );
+  }
+
+  if (!serverConfig.googleSearchEngineId) {
+      return NextResponse.json(
+          { error: true, message: "Missing Google Search Engine ID (cx) in server config" },
+          { status: 500 }
+      );
   }
 
   const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${serverConfig.googleSearchEngineId}&q=${encodeURIComponent(searchQuery)}`;
 
   try {
     const response = await fetch(searchUrl);
+
+    if (!response.ok) {
+      console.error("[Google Search] API request failed with status:", response.status);
+      const errorData = await response.json();
+      console.error("[Google Search] Error Data:", errorData);
+      return NextResponse.json({
+        error: true,
+        message: `Google Search API error: ${errorData?.error?.message || response.statusText}`
+      }, { status: response.status });
+    }
+
     const data = await response.json();
     return NextResponse.json(data);
   } catch (e) {
     console.error("[Google Search] ", e);
-    return NextResponse.json(prettyObject(e));
+    return NextResponse.json(prettyObject(e), { status: 500 }); // 添加状态码
   }
 }
 
