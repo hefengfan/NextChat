@@ -6,7 +6,7 @@ import { prettyObject } from "@/app/utils/format";
 
 const serverConfig = getServerSideConfig();
 
-export async function handle(
+async function handle(
   req: NextRequest,
   { params }: { params: { provider: string; path: string[] } },
 ) {
@@ -107,14 +107,23 @@ async function request(req: NextRequest, apiKey: string) {
     body = {};
   }
 
-  // Add the tools array if it doesn't exist and we want to use googleSearch
+  // Check if the user input is too long.  If so, skip the google search.
+  const userInput = (body?.contents?.[0]?.parts?.[0]?.text || "").trim();
+  const MAX_INPUT_LENGTH = 200; // Adjust this value as needed.
+  const shouldSearch = userInput.length <= MAX_INPUT_LENGTH;
+
+  // Add the tools array if it doesn't exist and we want to use googleSearch AND the input isn't too long.
   if (
+    shouldSearch &&
     body &&
     typeof body === "object" &&
     !Array.isArray(body) &&
     !body.tools
   ) {
     body.tools = [{ googleSearch: {} }];
+  } else if (body?.tools) {
+    // If input is too long, remove the tools array to prevent Google Search.
+    delete body.tools;
   }
 
   const fetchOptions: RequestInit = {
@@ -137,47 +146,60 @@ async function request(req: NextRequest, apiKey: string) {
   try {
     const res = await fetch(fetchUrl, fetchOptions);
 
-    // to prevent browser prompt for credentials
-    const newHeaders = new Headers(res.headers);
-    newHeaders.delete("www-authenticate");
-    // to disable nginx buffering
-    newHeaders.set("X-Accel-Buffering", "no");
+    // Check if the response is a stream (SSE)
+    if (req?.nextUrl?.searchParams?.get("alt") === "sse") {
+      // For SSE, just return the raw response.
+      const newHeaders = new Headers(res.headers);
+      newHeaders.delete("www-authenticate");
+      newHeaders.set("X-Accel-Buffering", "no");
 
-    // Modified part to extract and format search results
-    let responseBody = await res.clone().json(); // Clone the response to read it without consuming it
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: newHeaders,
+      });
+    } else {
+      // For non-SSE, process the JSON response to include links and titles.
+      const data = await res.json();
 
-    if (responseBody && responseBody.candidates && responseBody.candidates.length > 0) {
-      const content = responseBody.candidates[0].content;
-      if (content && content.parts && content.parts.length > 0) {
-        const parts = content.parts;
-        let searchResults = "";
+      if (shouldSearch && data?.candidates?.[0]?.content?.parts) {
+        // Extract search results and append them to the response.
+        const searchResults =
+          data.candidates[0].content.parts.find(
+            (part: any) => part.tool_calls,
+          )?.tool_calls?.[0]?.function_response?.content;
 
-        parts.forEach((part: any) => {
-          if (part.tool_calls && part.tool_calls.length > 0) {
-            part.tool_calls.forEach((toolCall: any) => {
-              if (toolCall.function_response && toolCall.function_response.content) {
-                const searchResultsArray = JSON.parse(toolCall.function_response.content);
+        if (searchResults) {
+          try {
+            const searchResultsJson = JSON.parse(searchResults);
 
-                if (Array.isArray(searchResultsArray)) {
-                  searchResultsArray.forEach((result: any) => {
-                    searchResults += `[${result.title}](${result.link}) - ${result.snippet}\n\n`;
-                  });
-                }
-              }
-            });
+            if (searchResultsJson?.results && Array.isArray(searchResultsJson.results)) {
+              const formattedResults = searchResultsJson.results.map((result: any) => {
+                return `[${result.title}](${result.link})`;
+              }).join("\n");
+
+              // Append search results to the last part of the content.
+              const lastPart = data.candidates[0].content.parts.pop();
+              const newContent = (lastPart?.text || "") + "\n\n**Search Results:**\n" + formattedResults;
+              data.candidates[0].content.parts.push({ text: newContent });
+            }
+
+          } catch (error) {
+            console.error("Error parsing search results:", error);
           }
-        });
-
-        // Replace the original response with the formatted search results
-        responseBody = { searchResults };
+        }
       }
-    }
 
-    return new Response(JSON.stringify(responseBody), { // Stringify the modified response body
-      status: res.status,
-      statusText: res.statusText,
-      headers: newHeaders,
-    });
+      const newHeaders = new Headers(res.headers);
+      newHeaders.delete("www-authenticate");
+      newHeaders.set("X-Accel-Buffering", "no");
+
+      return NextResponse.json(data, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: newHeaders,
+      });
+    }
   } finally {
     clearTimeout(timeoutId);
   }
