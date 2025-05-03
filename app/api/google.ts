@@ -145,15 +145,17 @@ async function request(req: NextRequest, apiKey: string) {
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    if (!res.body) {
-      return new Response(res.body, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: newHeaders,
-      });
-    }
+    // Use tee() to create two independent streams
+    const [body1, body2] = res.body ? res.body.tee() : [null, null];
 
-    const reader = res.body.getReader();
+    // Check if the stream is empty (optional, but good practice)
+    if (!body1) {
+        return new Response(null, { // Return an empty response
+            status: res.status,
+            statusText: res.statusText,
+            headers: newHeaders,
+        });
+    }
 
     const transformStream = new TransformStream({
       transform(chunk, controller) {
@@ -182,7 +184,8 @@ async function request(req: NextRequest, apiKey: string) {
       },
     }, { highWaterMark: 0 }); // Setting highWaterMark to 0 can help with backpressure
 
-    const transformedStream = res.body.pipeThrough(transformStream);
+    // Pipe the *second* stream (body2) through the transform stream
+    const transformedStream = body2.pipeThrough(transformStream);
 
     return new Response(transformedStream, {
       status: res.status,
