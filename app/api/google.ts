@@ -97,6 +97,34 @@ async function request(req: NextRequest, apiKey: string) {
   }`;
   
   console.log("[Fetch Url] ", fetchUrl);
+
+  let body: any = null;
+  try {
+    body = await req.json();
+  } catch (e) {
+    // If the body is not a valid JSON, we ignore it.
+    console.warn("[request] body is not a valid JSON, ignoring it.");
+    body = null;
+  }
+
+  if (body && body.contents && Array.isArray(body.contents)) {
+    body.contents.forEach((content: any) => {
+      if (content.parts && Array.isArray(content.parts)) {
+        content.parts.forEach((part: any) => {
+          if (typeof part.text === 'string') {
+            // Add instructions to use Chinese for responses
+            part.text = `请用中文回答: ${part.text}`;
+          }
+        });
+      }
+    });
+
+    // Add tools to the request body if it doesn't exist.  This enables Google Search.
+    if (!body.tools) {
+      body.tools = [{ googleSearch: {} }];
+    }
+  }
+
   const fetchOptions: RequestInit = {
     headers: {
       "Content-Type": "application/json",
@@ -106,14 +134,14 @@ async function request(req: NextRequest, apiKey: string) {
         (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
-    body: req.body,
+    body: body ? JSON.stringify(body) : null,
     // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
     signal: controller.signal,
   };
-  body.tools = [{ googleSearch: {} }];
+
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
