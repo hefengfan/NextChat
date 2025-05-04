@@ -41,7 +41,7 @@ export async function handle(
     );
   }
   try {
-    const response = await request(req, apiKey, req);
+    const response = await request(req, apiKey);
     return response;
   } catch (e) {
     console.error("[Google] ", e);
@@ -59,7 +59,6 @@ export const preferredRegion = [
   "cpt1",
   "gru1",
   "hnd1",
-  "iad1",
   "icn1",
   "kix1",
   "pdx1",
@@ -68,38 +67,54 @@ export const preferredRegion = [
   "syd1",
 ];
 
-// Function to detect if the input is code (very basic check)
-function isCode(input: string): boolean {
-  // Check for common code keywords and symbols
-  const codeKeywords = ["function", "class", "import", "export", "const", "let", "var", "if", "else", "for", "while", "return"];
-  const codeSymbols = ["{", "}", "(", ")", "[", "]", ";", "=", "+", "-", "*", "/", "<", ">", "."];
-
-  const lowerCaseInput = input.toLowerCase();
-  for (const keyword of codeKeywords) {
-    if (lowerCaseInput.includes(keyword)) {
-      return true;
-    }
+// Helper function to extract URLs and titles from the googleSearch tool results
+function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
+  if (!body || !body.tools) {
+    return [];
   }
 
-  for (const symbol of codeSymbols) {
-    if (lowerCaseInput.includes(symbol)) {
-      return true;
-    }
+  const googleSearchTool = body.tools.find(
+    (tool: any) => tool.googleSearch !== undefined,
+  );
+
+  if (!googleSearchTool || !googleSearchTool.googleSearch) {
+    return [];
   }
 
-  return false;
+  const results = googleSearchTool.googleSearch.results;
+
+  if (!results || !Array.isArray(results)) {
+    return [];
+  }
+
+  return results.map((result: any) => ({
+    title: result.title || "Untitled",
+    url: result.link || result.url || "",
+  }));
 }
 
+// Helper function to append citations to the AI response
+function appendCitations(
+  responseText: string,
+  citations: { title: string; url: string }[],
+): string {
+  if (!citations || citations.length === 0) {
+    return responseText;
+  }
 
-async function request(req: NextRequest, apiKey: string, originalReq: NextRequest) {
+  let augmentedText = responseText;
+  citations.forEach((citation, index) => {
+    augmentedText += ` [${citation.title}](${citation.url})`;
+  });
+  return augmentedText;
+}
+
+async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
 
   let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
 
   let path = `${req.nextUrl.pathname}`.replaceAll(ApiPath.Google, "");
-
-  // Remove the specific path segment
-  path = path.replace("/v1beta/models/gemini-pro:streamGenerateContent", "");
 
   if (!baseUrl.startsWith("http")) {
     baseUrl = `https://${baseUrl}`;
@@ -133,21 +148,8 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
     body = {};
   }
 
-  // Check if the input is code
-  let useGoogleSearch = true;
-  if (body?.contents && Array.isArray(body.contents) && body.contents.length > 0) {
-    const firstPart = body.contents[0];
-    if (firstPart?.parts && Array.isArray(firstPart.parts) && firstPart.parts.length > 0) {
-      const text = firstPart.parts[0]?.text;
-      if (text && isCode(text)) {
-        useGoogleSearch = false;
-      }
-    }
-  }
-
   // Add the tools array if it doesn't exist and we want to use googleSearch
   if (
-    useGoogleSearch &&
     body &&
     typeof body === "object" &&
     !Array.isArray(body) &&
@@ -161,8 +163,8 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
       "x-goog-api-key":
-        originalReq.headers.get("x-goog-api-key") ||
-        (originalReq.headers.get("Authorization") ?? "").replace("Bearer ", ""),
+        req.headers.get("x-goog-api-key") ||
+        (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
     body: JSON.stringify(body), // Stringify the modified body
@@ -175,13 +177,23 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
+
     // to prevent browser prompt for credentials
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    return new Response(res.body, {
+    // Read the response body as text
+    let responseText = await res.text();
+
+    // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
+    const citations = extractUrlsAndTitles(body);
+
+    // Append citations to the response text
+    responseText = appendCitations(responseText, citations);
+
+    return new Response(responseText, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
