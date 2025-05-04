@@ -154,41 +154,31 @@ async function request(req: NextRequest, apiKey: string) {
 
   const instructionPrefix = `请用中文回答，并在必要时引用以下来源：${citationString}\n\n`;
 
-  // Modify the body based on the expected API structure
-  if (body && body.messages && Array.isArray(body.messages)) {
-    // Chat API: Append to the last message
-    const lastMessage = body.messages[body.messages.length - 1];
-    if (lastMessage && lastMessage.content) {
-      lastMessage.content = instructionPrefix + lastMessage.content;
-    } else {
-      lastMessage.content = instructionPrefix;
-    }
+  // Modify the body based on the expected API structure (TEXT GENERATION)
+  let promptField = "prompt"; // Default assumption
+
+  if (!body || typeof body !== 'object') {
+      body = {}; // Ensure body is an object
+  }
+
+  if (body.hasOwnProperty("input")) {
+      promptField = "input";
   } else {
-    // Assume a text generation API that uses a "prompt" or similar field.  Try to find it.
-    let promptField = "prompt"; // Default assumption
-    if (!body || typeof body !== 'object') {
-        body = {}; // Ensure body is an object
-    }
+      // Check for other common prompt-like field names (add more if needed)
+      const possibleFields = ["text", "query"];
+      for (const field of possibleFields) {
+          if (body.hasOwnProperty(field)) {
+              promptField = field;
+              break;
+          }
+      }
+  }
 
-    if (body.hasOwnProperty("input")) {
-        promptField = "input";
-    } else {
-        // Check for other common prompt-like field names (add more if needed)
-        const possibleFields = ["text", "query"];
-        for (const field of possibleFields) {
-            if (body.hasOwnProperty(field)) {
-                promptField = field;
-                break;
-            }
-        }
-    }
-
-    if (body && body[promptField]) {
-      body[promptField] = instructionPrefix + body[promptField];
-    } else {
-      // If no prompt field is found, create a "messages" array with a single message. This is a last resort.
-      body.messages = [{ role: "user", content: instructionPrefix }];
-    }
+  if (body && body[promptField]) {
+    body[promptField] = instructionPrefix + body[promptField];
+  } else {
+    // If no prompt field is found, set the prompt to just the instruction.
+    body.prompt = instructionPrefix;
   }
 
 
