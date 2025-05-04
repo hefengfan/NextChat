@@ -59,6 +59,7 @@ export const preferredRegion = [
   "cpt1",
   "gru1",
   "hnd1",
+  "iad1",
   "icn1",
   "kix1",
   "pdx1",
@@ -102,11 +103,12 @@ function appendCitations(
     return responseText;
   }
 
-  let augmentedText = responseText;
+  let augmentedResponse = responseText;
   citations.forEach((citation, index) => {
-    augmentedText += ` [${citation.title}](${citation.url})`;
+    augmentedResponse += ` [${citation.url}](${citation.url})`;
   });
-  return augmentedText;
+
+  return augmentedResponse;
 }
 
 async function request(req: NextRequest, apiKey: string) {
