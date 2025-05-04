@@ -41,7 +41,7 @@ export async function handle(
     );
   }
   try {
-    const response = await request(req, apiKey, req); // Pass the original request
+    const response = await request(req, apiKey);
     return response;
   } catch (e) {
     console.error("[Google] ", e);
@@ -68,7 +68,50 @@ export const preferredRegion = [
   "syd1",
 ];
 
-async function request(req: NextRequest, apiKey: string, originalReq: NextRequest) { // Added originalReq
+// Helper function to extract URLs and titles from the googleSearch tool results
+function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
+  if (!body || !body.tools) {
+    return [];
+  }
+
+  const googleSearchTool = body.tools.find(
+    (tool: any) => tool.googleSearch !== undefined,
+  );
+
+  if (!googleSearchTool || !googleSearchTool.googleSearch) {
+    return [];
+  }
+
+  const results = googleSearchTool.googleSearch.results;
+
+  if (!results || !Array.isArray(results)) {
+    return [];
+  }
+
+  return results.map((result: any) => ({
+    title: result.title || "Untitled",
+    url: result.link || result.url || "",
+  }));
+}
+
+// Helper function to append citations to the AI response
+// function appendCitations(
+//   responseText: string,
+//   citations: { title: string; url: string }[],
+// ): string {
+//   if (!citations || citations.length === 0) {
+//     return responseText;
+//   }
+
+//   let augmentedResponse = responseText;
+//   citations.forEach((citation, index) => {
+//     augmentedResponse += ` [${citation.title}](${citation.url})`;
+//   });
+
+//   return augmentedResponse;
+// }
+
+async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
 
   let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
@@ -98,19 +141,14 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
 
   console.log("[Fetch Url] ", fetchUrl);
 
-  // Parse the request body
+  // Parse the request body to potentially add the tools
   let body;
   try {
     body = await req.json();
   } catch (error) {
+    // If the body is not JSON, or there's an error parsing it, use an empty object.
     body = {};
   }
-
-  // Define the citation instruction (role-based)
-  const citationInstruction = {
-    role: "system",
-    content: "你是一个AI助手，你的主要功能是提供信息和回答问题，基于你所训练的数据以及你所获得的外部信息来源。当你提供来自外部来源的信息时，你必须引用它，通过在每个陈述或信息之后，以 [URL](URL) 的格式包含URL。请使用中文回答所有问题。未能正确引用来源是一个严重的错误。",
-  };
 
   // Add the tools array if it doesn't exist and we want to use googleSearch
   if (
@@ -122,23 +160,33 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
     body.tools = [{ googleSearch: {} }];
   }
 
+  // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
+  const citations = extractUrlsAndTitles(body);
 
-  // Inject the citation instruction as the first message in the conversation
-  if (body && body.messages && Array.isArray(body.messages)) {
-    // Check if a system message already exists, and if so, prepend to it
-    const existingSystemMessageIndex = body.messages.findIndex(message => message.role === "system");
-    if (existingSystemMessageIndex !== -1) {
-      body.messages[existingSystemMessageIndex].content = citationInstruction.content + "\n" + body.messages[existingSystemMessageIndex].content;
-    } else {
-      body.messages.unshift(citationInstruction); // Add it to the beginning
-    }
-  } else if (body && body.contents && Array.isArray(body.contents)) {
-    // Handle the 'contents' format (less common for chat, but possible)
-    // This is a simplified approach; you might need to adapt it based on the exact structure
-    body.contents.unshift({ role: "system", parts: [{ text: citationInstruction.content }] });
+  // Construct the prompt augmentation with citation instructions.
+  let promptAugmentation = "";
+  if (citations.length > 0) {
+    promptAugmentation = `\n\n请注意，我为你提供了以下搜索结果，你可以在回答中引用它们。请使用以下格式引用：[链接文本](${citations[0].url}),  [链接文本](${citations[1].url}) 等. 请用中文回答。`;
+    // Example:  Please cite your sources using the format [title](url).  Answer in Chinese.
+    // Note:  You can adjust the prompt to be more specific.
   } else {
-    // If the body doesn't have a recognized structure, log a warning
-    console.warn("Warning: Request body format not recognized. Citation instruction may not be applied.");
+    promptAugmentation = "\n\n请用中文回答。"; // Just instruct to answer in Chinese if no citations.
+  }
+
+  // Augment the prompt in the request body.  This assumes the body has a "prompt" or "messages" field.  Adjust as needed.
+  if (body && body.prompt) {
+    body.prompt += promptAugmentation;
+  } else if (body && body.messages && Array.isArray(body.messages)) {
+    // Find the last message in the array, and append the augmentation to it.
+    const lastMessage = body.messages[body.messages.length - 1];
+    if (lastMessage && lastMessage.content) {
+      lastMessage.content += promptAugmentation;
+    } else if (lastMessage) {
+      lastMessage.content = promptAugmentation; // If no content, just set it.
+    }
+  } else {
+    // If we can't find a place to inject the prompt, log it.
+    console.warn("Could not inject prompt augmentation.  Request body:", body);
   }
 
   const fetchOptions: RequestInit = {
@@ -150,7 +198,8 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
         (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
-    body: JSON.stringify(body),
+    body: JSON.stringify(body), // Stringify the modified body
+    // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
@@ -166,7 +215,11 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    return new Response(res.body, {
+    // Read the response body as text
+    const responseText = await res.text();
+
+    // Return the response.  The AI should now generate citations itself.
+    return new Response(responseText, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
