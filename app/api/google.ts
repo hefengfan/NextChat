@@ -94,23 +94,6 @@ function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
   }));
 }
 
-// Helper function to append citations to the AI response
-// function appendCitations(
-//   responseText: string,
-//   citations: { title: string; url: string }[],
-// ): string {
-//   if (!citations || citations.length === 0) {
-//     return responseText;
-//   }
-
-//   let augmentedResponse = responseText;
-//   citations.forEach((citation, index) => {
-//     augmentedResponse += ` [${citation.title}](${citation.url})`;
-//   });
-
-//   return augmentedResponse;
-// }
-
 async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
 
@@ -163,30 +146,14 @@ async function request(req: NextRequest, apiKey: string) {
   // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
   const citations = extractUrlsAndTitles(body);
 
-  // Construct the prompt augmentation with citation instructions.
-  let promptAugmentation = "";
-  if (citations.length > 0) {
-    promptAugmentation = `\n\n请注意，我为你提供了以下搜索结果，你可以在回答中引用它们。请使用以下格式引用：[链接文本](${citations[0].url}),  [链接文本](${citations[1].url}) 等. 请用中文回答。`;
-    // Example:  Please cite your sources using the format [title](url).  Answer in Chinese.
-    // Note:  You can adjust the prompt to be more specific.
-  } else {
-    promptAugmentation = "\n\n请用中文回答。"; // Just instruct to answer in Chinese if no citations.
-  }
-
-  // Augment the prompt in the request body.  This assumes the body has a "prompt" or "messages" field.  Adjust as needed.
-  if (body && body.prompt) {
-    body.prompt += promptAugmentation;
-  } else if (body && body.messages && Array.isArray(body.messages)) {
-    // Find the last message in the array, and append the augmentation to it.
+  // Add instructions to the prompt to cite sources in the response
+  if (citations.length > 0 && body.prompt) {
+    body.prompt = `请用中文回答以下问题，并在回答中根据需要引用来源。 引用格式为：[来源标题](${citations[0].url})。 如果有多个来源，请依次使用 [来源标题1](${citations[0].url}), [来源标题2](${citations[1].url}) 等格式引用。\n\n${body.prompt}`;
+  } else if (citations.length > 0 && body.messages) {
     const lastMessage = body.messages[body.messages.length - 1];
     if (lastMessage && lastMessage.content) {
-      lastMessage.content += promptAugmentation;
-    } else if (lastMessage) {
-      lastMessage.content = promptAugmentation; // If no content, just set it.
+      lastMessage.content = `请用中文回答以下问题，并在回答中根据需要引用来源。 引用格式为：[来源标题](${citations[0].url})。 如果有多个来源，请依次使用 [来源标题1](${citations[0].url}), [来源标题2](${citations[1].url}) 等格式引用。\n\n${lastMessage.content}`;
     }
-  } else {
-    // If we can't find a place to inject the prompt, log it.
-    console.warn("Could not inject prompt augmentation.  Request body:", body);
   }
 
   const fetchOptions: RequestInit = {
@@ -218,7 +185,6 @@ async function request(req: NextRequest, apiKey: string) {
     // Read the response body as text
     const responseText = await res.text();
 
-    // Return the response.  The AI should now generate citations itself.
     return new Response(responseText, {
       status: res.status,
       statusText: res.statusText,
