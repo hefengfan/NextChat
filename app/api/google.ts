@@ -6,6 +6,28 @@ import { prettyObject } from "@/app/utils/format";
 
 const serverConfig = getServerSideConfig();
 
+// Define types for the request body structure
+interface Message {
+  role: string;
+  content: string;
+}
+
+interface ContentPart {
+  text: string;
+}
+
+interface Content {
+  role: string;
+  parts: ContentPart[];
+}
+
+interface RequestBody {
+  messages?: Message[];
+  contents?: Content[];
+  tools?: any[]; // Define a more specific type if possible
+}
+
+
 export async function handle(
   req: NextRequest,
   { params }: { params: { provider: string; path: string[] } },
@@ -72,8 +94,8 @@ export const preferredRegion = [
 function isLikelyCode(prompt: string): boolean {
   // Simple heuristics:  Adjust as needed
   const codeKeywords = ["function", "class", "import", "def", "for", "while", "if", "else", "return", "console.log", "print", "<", ">", "{", "}", "[", "]", "(", ")", ";", "=", "+", "-", "*", "/", "=>"];
-  const codeKeywordCount = codeKeywords.filter(keyword => prompt.includes(keyword)).length;
   const codeLineCount = prompt.split('\n').filter(line => line.trim().startsWith('//') || line.trim().startsWith('#')).length;
+  const codeKeywordCount = codeKeywords.filter(keyword => prompt.includes(keyword)).length;
 
   // Check if the prompt contains common code keywords or many code-like lines
   return codeKeywordCount >= 3 || codeLineCount >= 2; // Adjust thresholds as needed
@@ -110,9 +132,9 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
   console.log("[Fetch Url] ", fetchUrl);
 
   // Parse the request body
-  let body;
+  let body: RequestBody;
   try {
-    body = await req.json();
+    body = await req.json() as RequestBody;
   } catch (error) {
     body = {};
   }
@@ -120,9 +142,9 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
   // Extract the prompt from the request body
   let prompt = "";
   if (body && body.messages && Array.isArray(body.messages)) {
-    prompt = body.messages.map(message => message.content).join("\n");
+    prompt = body.messages.map((message: Message) => message.content).join("\n");
   } else if (body && body.contents && Array.isArray(body.contents)) {
-    prompt = body.contents.map(content => content.parts.map(part => part.text).join("\n")).join("\n");
+    prompt = body.contents.map((content: Content) => content.parts.map(part => part.text).join("\n")).join("\n");
   }
 
   // Check if the prompt is likely code
@@ -130,9 +152,10 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
   console.log("[Code Detection] isCode:", isCode);
 
   // Define the citation instruction (role-based)
+  let citationInstructionContent = "你是一个人工智能助手，你的主要功能是提供信息和回答问题，这些信息和答案基于你接受过训练的数据以及你被允许访问的任何外部来源。每当你提供来自外部来源的信息时，你必须通过在陈述或信息之后立即以[URL](URL)格式包含URL来引用它。未能正确引用来源是一个严重的错误。请务必用中文回答。";
   const citationInstruction = {
     role: "system",
-    content: "You are an AI assistant whose primary function is to provide information and answer questions based on the data you have been trained on and any external sources you are given access to.  Whenever you provide information from an external source, you MUST cite it by including the URL in the format [URL](URL) immediately after the statement or piece of information.  Failure to cite sources correctly is a critical error.",
+    content: citationInstructionContent,
   };
 
   // Conditionally add the tools array based on code detection
@@ -147,7 +170,6 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
       delete body.tools; // Remove tools if it's code
     }
   }
-
 
   // Inject the citation instruction as the first message in the conversation
   if (body && body.messages && Array.isArray(body.messages)) {
