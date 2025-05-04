@@ -41,7 +41,7 @@ export async function handle(
     );
   }
   try {
-    const response = await request(req, apiKey);
+    const response = await request(req, apiKey, req); // Pass the original request
     return response;
   } catch (e) {
     console.error("[Google] ", e);
@@ -68,50 +68,18 @@ export const preferredRegion = [
   "syd1",
 ];
 
-// Helper function to extract URLs and titles from the googleSearch tool results
-function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
-  if (!body || !body.tools) {
-    return [];
-  }
+// Function to detect if the prompt is likely code
+function isLikelyCode(prompt: string): boolean {
+  // Simple heuristics:  Adjust as needed
+  const codeKeywords = ["function", "class", "import", "def", "for", "while", "if", "else", "return", "console.log", "print", "<", ">", "{", "}", "[", "]", "(", ")", ";", "=", "+", "-", "*", "/", "=>"];
+  const codeKeywordCount = codeKeywords.filter(keyword => prompt.includes(keyword)).length;
+  const codeLineCount = prompt.split('\n').filter(line => line.trim().startsWith('//') || line.trim().startsWith('#')).length;
 
-  const googleSearchTool = body.tools.find(
-    (tool: any) => tool.googleSearch !== undefined,
-  );
-
-  if (!googleSearchTool || !googleSearchTool.googleSearch) {
-    return [];
-  }
-
-  const results = googleSearchTool.googleSearch.results;
-
-  if (!results || !Array.isArray(results)) {
-    return [];
-  }
-
-  return results.map((result: any) => ({
-    title: result.title || "Untitled",
-    url: result.link || result.url || "",
-  }));
+  // Check if the prompt contains common code keywords or many code-like lines
+  return codeKeywordCount >= 3 || codeLineCount >= 2; // Adjust thresholds as needed
 }
 
-// Helper function to append citations to the AI response
-function appendCitations(
-  responseText: string,
-  citations: { title: string; url: string }[],
-): string {
-  if (!citations || citations.length === 0) {
-    return responseText;
-  }
-
-  let augmentedResponse = responseText;
-  citations.forEach((citation, index) => {
-    augmentedResponse += ` [${citation.url}](${citation.url})`;
-  });
-
-  return augmentedResponse;
-}
-
-async function request(req: NextRequest, apiKey: string) {
+async function request(req: NextRequest, apiKey: string, originalReq: NextRequest) { // Added originalReq
   const controller = new AbortController();
 
   let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
@@ -141,23 +109,62 @@ async function request(req: NextRequest, apiKey: string) {
 
   console.log("[Fetch Url] ", fetchUrl);
 
-  // Parse the request body to potentially add the tools
+  // Parse the request body
   let body;
   try {
     body = await req.json();
   } catch (error) {
-    // If the body is not JSON, or there's an error parsing it, use an empty object.
     body = {};
   }
 
-  // Add the tools array if it doesn't exist and we want to use googleSearch
+  // Extract the prompt from the request body
+  let prompt = "";
+  if (body && body.messages && Array.isArray(body.messages)) {
+    prompt = body.messages.map(message => message.content).join("\n");
+  } else if (body && body.contents && Array.isArray(body.contents)) {
+    prompt = body.contents.map(content => content.parts.map(part => part.text).join("\n")).join("\n");
+  }
+
+  // Check if the prompt is likely code
+  const isCode = isLikelyCode(prompt);
+  console.log("[Code Detection] isCode:", isCode);
+
+  // Define the citation instruction (role-based)
+  const citationInstruction = {
+    role: "system",
+    content: "You are an AI assistant whose primary function is to provide information and answer questions based on the data you have been trained on and any external sources you are given access to.  Whenever you provide information from an external source, you MUST cite it by including the URL in the format [URL](URL) immediately after the statement or piece of information.  Failure to cite sources correctly is a critical error.",
+  };
+
+  // Conditionally add the tools array based on code detection
   if (
     body &&
     typeof body === "object" &&
-    !Array.isArray(body) &&
-    !body.tools
+    !Array.isArray(body)
   ) {
-    body.tools = [{ googleSearch: {} }];
+    if (!isCode) {
+      body.tools = [{ googleSearch: {} }];
+    } else {
+      delete body.tools; // Remove tools if it's code
+    }
+  }
+
+
+  // Inject the citation instruction as the first message in the conversation
+  if (body && body.messages && Array.isArray(body.messages)) {
+    // Check if a system message already exists, and if so, prepend to it
+    const existingSystemMessageIndex = body.messages.findIndex(message => message.role === "system");
+    if (existingSystemMessageIndex !== -1) {
+      body.messages[existingSystemMessageIndex].content = citationInstruction.content + "\n" + body.messages[existingSystemMessageIndex].content;
+    } else {
+      body.messages.unshift(citationInstruction); // Add it to the beginning
+    }
+  } else if (body && body.contents && Array.isArray(body.contents)) {
+    // Handle the 'contents' format (less common for chat, but possible)
+    // This is a simplified approach; you might need to adapt it based on the exact structure
+    body.contents.unshift({ role: "system", parts: [{ text: citationInstruction.content }] });
+  } else {
+    // If the body doesn't have a recognized structure, log a warning
+    console.warn("Warning: Request body format not recognized. Citation instruction may not be applied.");
   }
 
   const fetchOptions: RequestInit = {
@@ -169,8 +176,7 @@ async function request(req: NextRequest, apiKey: string) {
         (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
-    body: JSON.stringify(body), // Stringify the modified body
-    // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
+    body: JSON.stringify(body),
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
@@ -186,16 +192,7 @@ async function request(req: NextRequest, apiKey: string) {
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    // Read the response body as text
-    let responseText = await res.text();
-
-    // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
-    const citations = extractUrlsAndTitles(body);
-
-    // Append citations to the response text
-    responseText = appendCitations(responseText, citations);
-
-    return new Response(responseText, {
+    return new Response(res.body, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
