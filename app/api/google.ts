@@ -68,49 +68,6 @@ export const preferredRegion = [
   "syd1",
 ];
 
-// Helper function to extract URLs and titles from the googleSearch tool results
-function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
-  if (!body || !body.tools) {
-    return [];
-  }
-
-  const googleSearchTool = body.tools.find(
-    (tool: any) => tool.googleSearch !== undefined,
-  );
-
-  if (!googleSearchTool || !googleSearchTool.googleSearch) {
-    return [];
-  }
-
-  const results = googleSearchTool.googleSearch.results;
-
-  if (!results || !Array.isArray(results)) {
-    return [];
-  }
-
-  return results.map((result: any) => ({
-    title: result.title || "Untitled",
-    url: result.link || result.url || "",
-  }));
-}
-
-// Helper function to append citations to the AI response
-function appendCitations(
-  responseText: string,
-  citations: { title: string; url: string }[],
-): string {
-  if (!citations || citations.length === 0) {
-    return responseText;
-  }
-
-  let augmentedResponse = responseText;
-  citations.forEach((citation, index) => {
-    augmentedResponse += ` [${citation.title}](${citation.url})`;
-  });
-
-  return augmentedResponse;
-}
-
 async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
 
@@ -138,28 +95,8 @@ async function request(req: NextRequest, apiKey: string) {
   const fetchUrl = `${baseUrl}${path}${
     req?.nextUrl?.searchParams?.get("alt") === "sse" ? "?alt=sse" : ""
   }`;
-
+  
   console.log("[Fetch Url] ", fetchUrl);
-
-  // Parse the request body to potentially add the tools
-  let body;
-  try {
-    body = await req.json();
-  } catch (error) {
-    // If the body is not JSON, or there's an error parsing it, use an empty object.
-    body = {};
-  }
-
-  // Add the tools array if it doesn't exist and we want to use googleSearch
-  if (
-    body &&
-    typeof body === "object" &&
-    !Array.isArray(body) &&
-    !body.tools
-  ) {
-    body.tools = [{ googleSearch: {} }];
-  }
-
   const fetchOptions: RequestInit = {
     headers: {
       "Content-Type": "application/json",
@@ -169,33 +106,24 @@ async function request(req: NextRequest, apiKey: string) {
         (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
-    body: JSON.stringify(body), // Stringify the modified body
+    body: req.body,
     // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
     signal: controller.signal,
   };
+  body.tools = [{ googleSearch: {} }];
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
-
     // to prevent browser prompt for credentials
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    // Read the response body as text
-    let responseText = await res.text();
-
-    // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
-    const citations = extractUrlsAndTitles(body);
-
-    // Append citations to the response text
-    responseText = appendCitations(responseText, citations);
-
-    return new Response(responseText, {
+    return new Response(res.body, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
