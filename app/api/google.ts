@@ -68,17 +68,6 @@ export const preferredRegion = [
   "syd1",
 ];
 
-// Function to detect if the prompt is likely code
-function isLikelyCode(prompt: string): boolean {
-  // Simple heuristics:  Adjust as needed
-  const codeKeywords = ["function", "class", "import", "def", "for", "while", "if", "else", "return", "console.log", "print", "<", ">", "{", "}", "[", "]", "(", ")", ";", "=", "+", "-", "*", "/", "=>"];
-  const codeLineCount = prompt.split('\n').filter(line => line.trim().startsWith('//') || line.trim().startsWith('#')).length;
-  const codeKeywordCount = codeKeywords.filter(keyword => prompt.includes(keyword)).length;
-
-  // Check if the prompt contains common code keywords or many code-like lines
-  return codeKeywordCount >= 3 || codeLineCount >= 2; // Adjust thresholds as needed
-}
-
 async function request(req: NextRequest, apiKey: string, originalReq: NextRequest) { // Added originalReq
   const controller = new AbortController();
 
@@ -117,37 +106,22 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
     body = {};
   }
 
-  // Extract the prompt from the request body
-  let prompt = "";
-  if (body && body.messages && Array.isArray(body.messages)) {
-    prompt = body.messages.map(message => message.content).join("\n");
-  } else if (body && body.contents && Array.isArray(body.contents)) {
-    prompt = body.contents.map(content => content.parts.map(part => part.text).join("\n")).join("\n");
-  }
-
-  // Check if the prompt is likely code
-  const isCode = isLikelyCode(prompt);
-  console.log("[Code Detection] isCode:", isCode);
-
   // Define the citation instruction (role-based)
-  let citationInstructionContent = "你是一个人工智能助手，你的主要功能是提供信息和回答问题，这些信息和答案基于你接受过训练的数据以及你被允许访问的任何外部来源。每当你提供来自外部来源的信息时，你必须通过在陈述或信息之后立即以[URL](URL)格式包含URL来引用它。未能正确引用来源是一个严重的错误。请务必用中文回答。";
   const citationInstruction = {
     role: "system",
-    content: citationInstructionContent,
+    content: "你是一个AI助手，你的主要功能是提供信息和回答问题，基于你所训练的数据以及你所获得的外部信息来源。当你提供来自外部来源的信息时，你必须引用它，通过在每个陈述或信息之后，以 [URL](URL) 的格式包含URL。请使用中文回答所有问题。未能正确引用来源是一个严重的错误。",
   };
 
-  // Conditionally add the tools array based on code detection
+  // Add the tools array if it doesn't exist and we want to use googleSearch
   if (
     body &&
     typeof body === "object" &&
-    !Array.isArray(body)
+    !Array.isArray(body) &&
+    !body.tools
   ) {
-    if (!isCode) {
-      body.tools = [{ googleSearch: {} }];
-    } else {
-      delete body.tools; // Remove tools if it's code
-    }
+    body.tools = [{ googleSearch: {} }];
   }
+
 
   // Inject the citation instruction as the first message in the conversation
   if (body && body.messages && Array.isArray(body.messages)) {
