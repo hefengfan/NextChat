@@ -107,6 +107,7 @@ async function request(req: NextRequest, apiKey: string) {
     body = null;
   }
 
+  // Modify the prompt to use Chinese for responses *before* adding tools
   if (body && body.contents && Array.isArray(body.contents)) {
     body.contents.forEach((content: any) => {
       if (content.parts && Array.isArray(content.parts)) {
@@ -118,11 +119,26 @@ async function request(req: NextRequest, apiKey: string) {
         });
       }
     });
+  }
 
-    // Add tools to the request body if it doesn't exist.  This enables Google Search.
-    if (!body.tools) {
-      body.tools = [{ googleSearch: {} }];
-    }
+  // Add tools to the request body if it doesn't exist.  This enables Google Search.
+  if (body && !body.tools) {
+    body.tools = [{ function_declarations: [
+        {
+          name: "google_search",
+          description: "Call this to access the google search API",
+          parameters: {
+            type: "OBJECT",
+            properties: {
+              query: {
+                type: "STRING",
+                description: "The query to run to perform the google search",
+              },
+            },
+            required: ["query"],
+          },
+        },
+      ] }];
   }
 
   const fetchOptions: RequestInit = {
