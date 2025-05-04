@@ -6,6 +6,10 @@ import { prettyObject } from "@/app/utils/format";
 
 const serverConfig = getServerSideConfig();
 
+// Add this to your prompt to encourage citations:
+const CITATION_PROMPT =
+  "When appropriate, please cite relevant web pages in the format: [citation.url](citation.url).";
+
 export async function handle(
   req: NextRequest,
   { params }: { params: { provider: string; path: string[] } },
@@ -41,7 +45,7 @@ export async function handle(
     );
   }
   try {
-    const response = await request(req, apiKey);
+    const response = await request(req, apiKey, CITATION_PROMPT);
     return response;
   } catch (e) {
     console.error("[Google] ", e);
@@ -68,43 +72,7 @@ export const preferredRegion = [
   "syd1",
 ];
 
-// Helper function to extract URLs and titles from the googleSearch tool results
-function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
-  if (!body || !body.tools) {
-    return [];
-  }
-
-  const googleSearchTool = body.tools.find(
-    (tool: any) => tool.googleSearch !== undefined,
-  );
-
-  if (!googleSearchTool || !googleSearchTool.googleSearch) {
-    return [];
-  }
-
-  const results = googleSearchTool.googleSearch.results;
-
-  if (!results || !Array.isArray(results)) {
-    return [];
-  }
-
-  return results.map((result: any) => ({
-    title: result.title || "Untitled",
-    url: result.link || result.url || "",
-  }));
-}
-
-// Helper function to create citation string
-function createCitationString(citations: { title: string; url: string }[]): string {
-    if (!citations || citations.length === 0) {
-        return "";
-    }
-
-    const citationStrings = citations.map(citation => `[${citation.title}](${citation.url})`);
-    return `\n\nCitations: ${citationStrings.join(', ')}`;
-}
-
-async function request(req: NextRequest, apiKey: string) {
+async function request(req: NextRequest, apiKey: string, citationPrompt: string) {
   const controller = new AbortController();
 
   let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
@@ -134,23 +102,23 @@ async function request(req: NextRequest, apiKey: string) {
 
   console.log("[Fetch Url] ", fetchUrl);
 
-  // Parse the request body to potentially add the tools
+  // Modify the request body to include the citation prompt.
   let body;
   try {
     body = await req.json();
   } catch (error) {
-    // If the body is not JSON, or there's an error parsing it, use an empty object.
-    body = {};
+    body = {}; // Handle cases where the body is not valid JSON.
   }
 
-  // Add the tools array if it doesn't exist and we want to use googleSearch
-  if (
-    body &&
-    typeof body === "object" &&
-    !Array.isArray(body) &&
-    !body.tools
-  ) {
-    body.tools = [{ googleSearch: {} }];
+  if (body && body.prompt) {
+    // Assuming the request is for a text generation model.  Adjust as needed.
+    body.prompt += `\n${citationPrompt}`;
+  } else if (body && body.messages) {
+    // For chat models
+    body.messages.push({
+      role: "system",
+      content: citationPrompt,
+    });
   }
 
   const fetchOptions: RequestInit = {
@@ -162,7 +130,7 @@ async function request(req: NextRequest, apiKey: string) {
         (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
-    body: JSON.stringify(body), // Stringify the modified body
+    body: JSON.stringify(body), // Stringify the potentially modified body
     // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
     redirect: "manual",
     // @ts-ignore
@@ -172,26 +140,13 @@ async function request(req: NextRequest, apiKey: string) {
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
-
     // to prevent browser prompt for credentials
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    // Read the response body as text
-    let responseText = await res.text();
-
-    // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
-    const citations = extractUrlsAndTitles(body);
-
-    // Create the citation string.
-    const citationString = createCitationString(citations);
-
-    // Append the citation string to the response text.  This will be added to the AI's context.
-    const augmentedResponse = responseText + citationString;
-
-    return new Response(augmentedResponse, {
+    return new Response(res.body, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
