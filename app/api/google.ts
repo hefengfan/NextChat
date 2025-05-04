@@ -94,6 +94,15 @@ function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
   }));
 }
 
+// Helper function to create citation string
+function createCitationString(citations: { title: string; url: string }[]): string {
+    if (!citations || citations.length === 0) {
+        return "";
+    }
+
+    const citationStrings = citations.map(citation => `[${citation.title}](${citation.url})`);
+    return `\n\nCitations: ${citationStrings.join(', ')}`;
+}
 
 async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
@@ -126,7 +135,7 @@ async function request(req: NextRequest, apiKey: string) {
   console.log("[Fetch Url] ", fetchUrl);
 
   // Parse the request body to potentially add the tools
-  let body: any;
+  let body;
   try {
     body = await req.json();
   } catch (error) {
@@ -144,44 +153,6 @@ async function request(req: NextRequest, apiKey: string) {
     body.tools = [{ googleSearch: {} }];
   }
 
-  // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
-  const citations = extractUrlsAndTitles(body);
-
-  // Construct the citation string to be added to the prompt.
-  const citationString = citations
-    .map(citation => `[${citation.title}](${citation.url})`)
-    .join(", ");
-
-  const instructionPrefix = `请用中文回答，并在必要时引用以下来源：${citationString}\n\n`;
-
-  // Modify the body based on the expected API structure (TEXT GENERATION)
-  let promptField = "prompt"; // Default assumption
-
-  if (!body || typeof body !== 'object') {
-      body = {}; // Ensure body is an object
-  }
-
-  if (body.hasOwnProperty("input")) {
-      promptField = "input";
-  } else {
-      // Check for other common prompt-like field names (add more if needed)
-      const possibleFields = ["text", "query"];
-      for (const field of possibleFields) {
-          if (body.hasOwnProperty(field)) {
-              promptField = field;
-              break;
-          }
-      }
-  }
-
-  if (body && body[promptField]) {
-    body[promptField] = instructionPrefix + body[promptField];
-  } else {
-    // If no prompt field is found, set the prompt to just the instruction.
-    body.prompt = instructionPrefix;
-  }
-
-
   const fetchOptions: RequestInit = {
     headers: {
       "Content-Type": "application/json",
@@ -191,7 +162,8 @@ async function request(req: NextRequest, apiKey: string) {
         (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
-    body: JSON.stringify(body),
+    body: JSON.stringify(body), // Stringify the modified body
+    // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
@@ -207,13 +179,23 @@ async function request(req: NextRequest, apiKey: string) {
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    const response = new Response(res.body, {
+    // Read the response body as text
+    let responseText = await res.text();
+
+    // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
+    const citations = extractUrlsAndTitles(body);
+
+    // Create the citation string.
+    const citationString = createCitationString(citations);
+
+    // Append the citation string to the response text.  This will be added to the AI's context.
+    const augmentedResponse = responseText + citationString;
+
+    return new Response(augmentedResponse, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
     });
-
-    return response;
   } finally {
     clearTimeout(timeoutId);
   }
