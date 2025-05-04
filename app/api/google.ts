@@ -6,28 +6,6 @@ import { prettyObject } from "@/app/utils/format";
 
 const serverConfig = getServerSideConfig();
 
-// Define types for the request body structure
-interface Message {
-  role: string;
-  content: string;
-}
-
-interface ContentPart {
-  text: string;
-}
-
-interface Content {
-  role: string;
-  parts: ContentPart[];
-}
-
-interface RequestBody {
-  messages?: Message[];
-  contents?: Content[];
-  tools?: any[]; // Define a more specific type if possible
-}
-
-
 export async function handle(
   req: NextRequest,
   { params }: { params: { provider: string; path: string[] } },
@@ -132,9 +110,9 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
   console.log("[Fetch Url] ", fetchUrl);
 
   // Parse the request body
-  let body: RequestBody;
+  let body;
   try {
-    body = await req.json() as RequestBody;
+    body = await req.json();
   } catch (error) {
     body = {};
   }
@@ -142,9 +120,9 @@ async function request(req: NextRequest, apiKey: string, originalReq: NextReques
   // Extract the prompt from the request body
   let prompt = "";
   if (body && body.messages && Array.isArray(body.messages)) {
-    prompt = body.messages.map((message: Message) => message.content).join("\n");
+    prompt = body.messages.map(message => message.content).join("\n");
   } else if (body && body.contents && Array.isArray(body.contents)) {
-    prompt = body.contents.map((content: Content) => content.parts.map(part => part.text).join("\n")).join("\n");
+    prompt = body.contents.map(content => content.parts.map(part => part.text).join("\n")).join("\n");
   }
 
   // Check if the prompt is likely code
