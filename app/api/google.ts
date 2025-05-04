@@ -126,7 +126,7 @@ async function request(req: NextRequest, apiKey: string) {
   console.log("[Fetch Url] ", fetchUrl);
 
   // Parse the request body to potentially add the tools
-  let body;
+  let body: any;
   try {
     body = await req.json();
   } catch (error) {
@@ -152,20 +152,43 @@ async function request(req: NextRequest, apiKey: string) {
     .map(citation => `[${citation.title}](${citation.url})`)
     .join(", ");
 
-  // Add the citation string to the prompt.  We're modifying the body *before* sending it to the API.
-  if (body && body.prompt) {
-    body.prompt = `请用中文回答，并在必要时引用以下来源：${citationString}\n\n${body.prompt}`;
-  } else if (body && body.messages) {
-    // Assuming it's a chat-like structure, append to the last message
+  const instructionPrefix = `请用中文回答，并在必要时引用以下来源：${citationString}\n\n`;
+
+  // Modify the body based on the expected API structure
+  if (body && body.messages && Array.isArray(body.messages)) {
+    // Chat API: Append to the last message
     const lastMessage = body.messages[body.messages.length - 1];
     if (lastMessage && lastMessage.content) {
-      lastMessage.content = `请用中文回答，并在必要时引用以下来源：${citationString}\n\n${lastMessage.content}`;
-    } else if (lastMessage) {
-      lastMessage.content = `请用中文回答，并在必要时引用以下来源：${citationString}`;
+      lastMessage.content = instructionPrefix + lastMessage.content;
+    } else {
+      lastMessage.content = instructionPrefix;
     }
   } else {
-    // If no prompt or messages exist, create a basic prompt with the citations.
-    body = { prompt: `请用中文回答，并在必要时引用以下来源：${citationString}` };
+    // Assume a text generation API that uses a "prompt" or similar field.  Try to find it.
+    let promptField = "prompt"; // Default assumption
+    if (!body || typeof body !== 'object') {
+        body = {}; // Ensure body is an object
+    }
+
+    if (body.hasOwnProperty("input")) {
+        promptField = "input";
+    } else {
+        // Check for other common prompt-like field names (add more if needed)
+        const possibleFields = ["text", "query"];
+        for (const field of possibleFields) {
+            if (body.hasOwnProperty(field)) {
+                promptField = field;
+                break;
+            }
+        }
+    }
+
+    if (body && body[promptField]) {
+      body[promptField] = instructionPrefix + body[promptField];
+    } else {
+      // If no prompt field is found, create a "messages" array with a single message. This is a last resort.
+      body.messages = [{ role: "user", content: instructionPrefix }];
+    }
   }
 
 
@@ -178,8 +201,7 @@ async function request(req: NextRequest, apiKey: string) {
         (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
     },
     method: req.method,
-    body: JSON.stringify(body), // Stringify the modified body
-    // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
+    body: JSON.stringify(body),
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
