@@ -114,7 +114,7 @@ async function request(req: NextRequest, apiKey: string) {
         content.parts.forEach((part: any) => {
           if (typeof part.text === 'string') {
             // Add instructions to use Chinese for responses
-            part.text = `请用中文回答: ${part.text}`;
+            part.text = `请用中文回答我的问题，用markdown显示引用的链接 ${part.text}`;
           }
         });
       }
