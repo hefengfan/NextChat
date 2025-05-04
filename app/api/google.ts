@@ -94,6 +94,7 @@ function extractUrlsAndTitles(body: any): { title: string; url: string }[] {
   }));
 }
 
+
 async function request(req: NextRequest, apiKey: string) {
   const controller = new AbortController();
 
@@ -146,15 +147,27 @@ async function request(req: NextRequest, apiKey: string) {
   // Extract URLs and titles from the request body (assuming it contains the googleSearch tool results)
   const citations = extractUrlsAndTitles(body);
 
-  // Add instructions to the prompt to cite sources in the response
-  if (citations.length > 0 && body.prompt) {
-    body.prompt = `请用中文回答以下问题，并在回答中根据需要引用来源。 引用格式为：[来源标题](${citations[0].url})。 如果有多个来源，请依次使用 [来源标题1](${citations[0].url}), [来源标题2](${citations[1].url}) 等格式引用。\n\n${body.prompt}`;
-  } else if (citations.length > 0 && body.messages) {
+  // Construct the citation string to be added to the prompt.
+  const citationString = citations
+    .map(citation => `[${citation.title}](${citation.url})`)
+    .join(", ");
+
+  // Add the citation string to the prompt.  We're modifying the body *before* sending it to the API.
+  if (body && body.prompt) {
+    body.prompt = `请用中文回答，并在必要时引用以下来源：${citationString}\n\n${body.prompt}`;
+  } else if (body && body.messages) {
+    // Assuming it's a chat-like structure, append to the last message
     const lastMessage = body.messages[body.messages.length - 1];
     if (lastMessage && lastMessage.content) {
-      lastMessage.content = `请用中文回答以下问题，并在回答中根据需要引用来源。 引用格式为：[来源标题](${citations[0].url})。 如果有多个来源，请依次使用 [来源标题1](${citations[0].url}), [来源标题2](${citations[1].url}) 等格式引用。\n\n${lastMessage.content}`;
+      lastMessage.content = `请用中文回答，并在必要时引用以下来源：${citationString}\n\n${lastMessage.content}`;
+    } else if (lastMessage) {
+      lastMessage.content = `请用中文回答，并在必要时引用以下来源：${citationString}`;
     }
+  } else {
+    // If no prompt or messages exist, create a basic prompt with the citations.
+    body = { prompt: `请用中文回答，并在必要时引用以下来源：${citationString}` };
   }
+
 
   const fetchOptions: RequestInit = {
     headers: {
@@ -182,14 +195,13 @@ async function request(req: NextRequest, apiKey: string) {
     // to disable nginx buffering
     newHeaders.set("X-Accel-Buffering", "no");
 
-    // Read the response body as text
-    const responseText = await res.text();
-
-    return new Response(responseText, {
+    const response = new Response(res.body, {
       status: res.status,
       statusText: res.statusText,
       headers: newHeaders,
     });
+
+    return response;
   } finally {
     clearTimeout(timeoutId);
   }
