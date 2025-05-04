@@ -103,10 +103,11 @@ async function request(req: NextRequest, apiKey: string, citationPrompt: string)
   console.log("[Fetch Url] ", fetchUrl);
 
   // Modify the request body to include the citation prompt.
-  let body;
+  let body: any = {}; // Initialize body as an empty object
   try {
     body = await req.json();
   } catch (error) {
+    console.error("Failed to parse request body:", error);
     body = {}; // Handle cases where the body is not valid JSON.
   }
 
