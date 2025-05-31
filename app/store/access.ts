@@ -140,7 +140,7 @@ const DEFAULT_ACCESS_STATE = {
   disableFastLink: false,
   customModels: "",
   defaultModel: "",
-  visionModels: "gemini-2.5-flash-preview-04-17,gemini-2.5-flash-preview-04-17-thinking",
+  visionModels: "",
 
   // tts config
   edgeTTSVoiceName: "zh-CN-YunxiNeural",
